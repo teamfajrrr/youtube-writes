@@ -176,7 +176,7 @@ def extract_video_id(url):
         r'(?:v=|\/)([0-9A-Za-z_-]{11}).*',
         r'(?:embed\/)([0-9A-Za-z_-]{11})',        r'(?:watch\?v=)([0-9A-Za-z_-]{11})',
         r'(?:youtu\.be\/)([0-9A-Za-z_-]{11})',
-        r'(?:youtube\.com\/shorts\/)([0-9A-Zaz_-]{11})'
+        r'(?:youtube\.com\/shorts\/)([0-9A-Za-z_-]{11})'
     ]
     for pattern in patterns:
         match = re.search(pattern, url)
