@@ -1,9 +1,13 @@
 import os
 import re
+import requests
+import socket
+import platform
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import TextFormatter
+from youtube_transcript_api._api import YouTubeTranscriptApi as OriginalYTAPI
 import logging
 
 # Configure logging
@@ -12,6 +16,22 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for n8n requests
+
+# Custom YouTube API class with proper headers to avoid blocking
+class CustomYouTubeTranscriptApi(OriginalYTAPI):
+    @classmethod
+    def _get_http_session(cls):
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        })
+        return session
 
 # Health check endpoint
 @app.route('/', methods=['GET'])
@@ -22,7 +42,8 @@ def health_check():
         'version': '1.0.0',
         'endpoints': {
             'transcript': '/transcript?url=YOUTUBE_URL',
-            'languages': '/transcript/languages?url=YOUTUBE_URL'
+            'languages': '/transcript/languages?url=YOUTUBE_URL',
+            'debug': '/debug'
         }
     })
 
@@ -30,6 +51,24 @@ def health_check():
 @app.route('/api/health', methods=['GET'])
 def api_health_check():
     return health_check()
+
+# Debug endpoint to check server environment
+@app.route('/debug', methods=['GET'])
+def debug_info():
+    try:
+        server_ip = socket.gethostbyname(socket.gethostname())
+    except:
+        server_ip = "Unable to determine"
+    
+    return jsonify({
+        'server_ip': server_ip,
+        'platform': platform.platform(),
+        'python_version': platform.python_version(),
+        'environment': os.environ.get('FLASK_ENV', 'production'),
+        'working_locally': False,
+        'railway_deployment': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
 
 @app.route('/transcript', methods=['GET'])
 def get_transcript():
@@ -58,8 +97,8 @@ def get_transcript():
         
         logger.info(f"Fetching transcript for video: {video_id}")
         
-        # Fetch transcript from YouTube
-        transcript_list = YouTubeTranscriptApi.get_transcript(
+        # Fetch transcript from YouTube using custom API class
+        transcript_list = CustomYouTubeTranscriptApi.get_transcript(
             video_id, 
             languages=[language, 'en']  # Try requested language, fallback to English
         )
@@ -107,7 +146,8 @@ def get_transcript():
                 'success': False,
                 'error': 'No transcripts available for this video',
                 'error_type': 'no_transcript',
-                'video_id': video_id if 'video_id' in locals() else None
+                'video_id': video_id if 'video_id' in locals() else None,
+                'debug_info': 'This video may not have captions enabled or may be restricted in this region'
             }), 404
         elif "Video unavailable" in error_message:
             return jsonify({
@@ -116,11 +156,20 @@ def get_transcript():
                 'error_type': 'unavailable',
                 'video_id': video_id if 'video_id' in locals() else None
             }), 404
+        elif "Subtitles are disabled" in error_message:
+            return jsonify({
+                'success': False,
+                'error': 'Subtitles are disabled for this video',
+                'error_type': 'subtitles_disabled',
+                'video_id': video_id if 'video_id' in locals() else None,
+                'debug_info': 'Try a different video with captions enabled'
+            }), 404
         else:
             return jsonify({
                 'success': False,
                 'error': error_message,
-                'error_type': 'unknown'
+                'error_type': 'unknown',
+                'debug_info': 'This might be a regional restriction or server IP blocking issue'
             }), 500
 
 @app.route('/transcript/languages', methods=['GET'])
@@ -143,8 +192,8 @@ def get_available_languages():
                 'provided_url': video_url
             }), 400
         
-        # Get available transcript languages
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        # Get available transcript languages using custom API class
+        transcript_list = CustomYouTubeTranscriptApi.list_transcripts(video_id)
         
         languages = []
         for transcript in transcript_list:
@@ -167,14 +216,16 @@ def get_available_languages():
         return jsonify({
             'success': False,
             'error': str(e),
-            'error_type': 'language_fetch_error'
+            'error_type': 'language_fetch_error',
+            'debug_info': 'This might be a regional restriction or server IP blocking issue'
         }), 500
 
 def extract_video_id(url):
     """Extract video ID from various YouTube URL formats"""
     patterns = [
         r'(?:v=|\/)([0-9A-Za-z_-]{11}).*',
-        r'(?:embed\/)([0-9A-Za-z_-]{11})',        r'(?:watch\?v=)([0-9A-Za-z_-]{11})',
+        r'(?:embed\/)([0-9A-Za-z_-]{11})',
+        r'(?:watch\?v=)([0-9A-Za-z_-]{11})',
         r'(?:youtu\.be\/)([0-9A-Za-z_-]{11})',
         r'(?:youtube\.com\/shorts\/)([0-9A-Za-z_-]{11})'
     ]
